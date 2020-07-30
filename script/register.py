@@ -8,6 +8,8 @@ import re
 import json
 import logging
 import xml.sax.handler
+# from urllib import request
+import requests
 
 
 # 继承xml.sax.handler.ContentHandler
@@ -81,10 +83,37 @@ class ConsulCenter(object):
         logging.getLogger().addHandler(console)  # 实例化添加handler
         logging.info("log初始化成功")
 
-    def RegisterService(this, name, host, port, tags=None):
-        tags = tags or []
-        this._consul.agent.service.register(name, name, host, port, tags,
-                                            check=consul.Check().tcp(host, port, "5s", "30s", "30s"))
+    def RegisterService(this, name, host, port, tags=None, instance1=None, agentIp=None, agentCode=None, sourceIp=None):
+        info = this.generateRegisterInfo(name, host, port, tags, instance1, agentIp, agentCode, sourceIp)
+        res = requests.put("http://10.8.0.98:8500/v1/catalog/register", data=json.dumps(info))
+
+    def generateRegisterInfo(this, name, host, port, tags=None, instance1=None, agentIp="123", agentCode=None,
+                             sourceIp=None):
+        # 基于已有数据构造json结构，采用http客户端的形式发送请求
+        NodeMeta = {"agentIp": agentIp}
+        if len(instance1) > 0:
+            NodeMeta["instance"] = instance1
+        if len(agentCode) > 0:
+            NodeMeta["agentCode"] = agentCode
+        if len(sourceIp) > 0:
+            NodeMeta["sourceIp"] = sourceIp
+        Service = {"ID": name}
+        Service["Service"] = name
+        Service["Port"] = port
+        Service["Tags"] = tags
+        info = {"Node": name}
+        info["Address"] = host
+        info["NodeMeta"] = NodeMeta
+        info["Service"] = Service
+        Checks = []
+        check = {"Name": name}
+        check["status"] = "passing"
+        Definition = {"http": "https://www.google.com"}
+        Definition["interval"] = "30s"
+        check["Definition"] = Definition
+        Checks.append(check)
+        info["Checks"] = Checks
+        return info
 
     def getTags(this, name, host, port, tags=None):
         tags = tags or []
@@ -116,7 +145,7 @@ if __name__ == '__main__':
     host_name = socket.gethostname()
     ConsulCenter.console_out()
     # consul主机信息
-    consul_host = "10.2.210.2"
+    consul_host = "10.8.0.98"
     # consul端口
     consul_port = "8500"
     # consul客户端实力
@@ -164,9 +193,7 @@ if __name__ == '__main__':
                                         # 获取配置文件的真实路径
                                         tomcatPath = tomcat.replace('\n', '')
                                         instance = consul_client.GetInstance(tomcatPath)
-
                                         realConfPath = tomcatPath + '/conf/server.xml'
-                                        # print(realConfPath, 'realConfPath')
                                         if os.path.isfile(realConfPath):
                                             parser.parse(realConfPath)
                                             if handler.mapping.__contains__("path"):
@@ -210,19 +237,43 @@ if __name__ == '__main__':
                                                 logging.info(tag)
                                             else:
                                                 inuseTags.append(tag)
+                                        agentIp = service_host
+                                        logging.info('blockboxexporter注册1');
                                         consul_client.RegisterService(
-                                            name, service_host, service_port, inuseTags)
+                                            name, service_host, service_port, inuseTags,"",agentIp,"","")
+                                        logging.info('blockboxexporter注册成功');
                                     else:
-                                        consul_client.RegisterService(name, service_host, service_port, tags)
+                                        agentIp = service_host
+                                        logging.info('blockboxexporter注册2');
+                                        consul_client.RegisterService(name, service_host, service_port, tags,"",agentIp,"","")
+                                        logging.info('blockboxexporter注册成功');
+
+                                elif p.name() == "node_exporter":
+                                    # 非blackbox类型的tag还是返回agentCode
+                                    dic = {"agentCode": name}
+                                    xu = json.dumps(dic)
+                                    tags = [xu]
+                                    instance1 = service_host + ":" + bytes(service_port)
+                                    agentIp = service_host
+                                    agentCode = name
+                                    sourceIp = service_host
+                                    consul_client.RegisterService(
+                                        name + "_" + service_host.replace('.', '_') + "_" + str(service_port),
+                                        service_host, service_port, tags, instance1, agentIp, agentCode, sourceIp)
+                                    logging.info('node_exporter注册成功');
                                 else:
                                     # 非blackbox类型的tag还是返回agentCode
                                     dic = {"agentCode": name}
                                     xu = json.dumps(dic)
                                     tags = [xu]
+                                    instance1 = service_host + ":" + bytes(service_port)
+                                    agentIp = service_host
+                                    agentCode = name
+                                    sourceIp = service_host
                                     consul_client.RegisterService(
                                         name + "_" + service_host.replace('.', '_') + "_" + str(service_port),
-                                        service_host, service_port, tags)
-                                logging.info(service_host + ":" + str(service_port) + ":" + name + '注册成功');
+                                        service_host, service_port, tags, instance1, agentIp, agentCode, sourceIp)
+                                    logging.info('普通类型exporter注册成功');
                                 # res = consul_client.GetService(name)
                                 break
                         except BaseException as err:
@@ -231,6 +282,7 @@ if __name__ == '__main__':
                             continue
             else:
                 continue
+
     # 针对jmx_exporter
     cmd = "ps -ef | grep jmx_exporter"
     jmx = os.popen(cmd)
@@ -239,6 +291,23 @@ if __name__ == '__main__':
         try:
             result = re.findall("jmx_.+?\.jar=\d+?:", jmx_exporter, flags=0)
             if len(result) > 0:
+
+                result1= re.findall(r"\d+\.?\d*", jmx_exporter, flags=0)
+                cmd1 = "ps -ef | grep tomcat | grep "+ result1[0]+" | grep -v grep | awk -F '-Dcatalina.base=' '{print $2}' | awk -F ' ' '{print $1}'"
+                # 获取tomcat
+                tomcats = os.popen(cmd1)
+                # 按行读取
+                tomcats = tomcats.readlines()
+                tags = []
+                # 构造xml解析器
+                parser = xml.sax.make_parser()
+                handler = PortHandler()
+                parser.setContentHandler(handler)
+                instance = None
+                for tomcat in tomcats:
+                    # 获取配置文件的真实路径
+                    tomcatPath = tomcat.replace('\n', '')
+                    instance = consul_client.GetInstance(tomcatPath)
                 exporter_str_list = result[0].split('=')
                 str_port = exporter_str_list[1]
                 pos = str_port.rfind(':')
@@ -248,8 +317,12 @@ if __name__ == '__main__':
                 dic = {"agentCode": name}
                 xu = json.dumps(dic)
                 tags = [xu]
+                instance1 = instance
+                agentIp = service_host
+                agentCode = name
+                sourceIp = service_host
                 consul_client.RegisterService(name + "_" + service_host.replace('.', '_') + "_" + str(service_port),
-                                              service_host, service_port, tags)
+                                              service_host, service_port, tags, instance1, agentIp, agentCode, sourceIp)
                 logging.info(service_host + ":" + str(service_port) + ":" + name + '注册成功');
         except BaseException as err:
             logging.error('jmx_exporter(java-jar类型)', err);
@@ -261,6 +334,23 @@ if __name__ == '__main__':
         try:
             result = re.findall("jmx_.+?\.jar=\d+?:", jmx_exporter, flags=0)
             if len(result) > 0:
+                result1 = re.findall(r"\d+\.?\d*", jmx_exporter, flags=0)
+
+                cmd1 = "ps -ef | grep tomcat | grep "+ result1[0]+" | grep -v grep | awk -F '-Dcatalina.base=' '{print $2}' | awk -F ' ' '{print $1}'"
+                # 获取tomcat
+                tomcats = os.popen(cmd1)
+                # 按行读取
+                tomcats = tomcats.readlines()
+                tags = []
+                # 构造xml解析器
+                parser = xml.sax.make_parser()
+                handler = PortHandler()
+                parser.setContentHandler(handler)
+                instance=None
+                for tomcat in tomcats:
+                    # 获取配置文件的真实路径
+                    tomcatPath = tomcat.replace('\n', '')
+                    instance = consul_client.GetInstance(tomcatPath)
                 exporter_str_list = result[0].split('=')
                 str_port = exporter_str_list[1]
                 pos = str_port.rfind(':')
@@ -270,8 +360,12 @@ if __name__ == '__main__':
                 dic = {"agentCode": name}
                 xu = json.dumps(dic)
                 tags = [xu]
+                instance1 = instance
+                agentIp = service_host
+                agentCode = name
+                sourceIp = service_host
                 consul_client.RegisterService(name + "_" + service_host.replace('.', '_') + "_" + str(service_port),
-                                              service_host, service_port, tags)
+                                              service_host, service_port, tags, instance1, agentIp, agentCode, sourceIp)
                 logging.info(service_host + ":" + str(service_port) + ":" + name + '注册成功');
         except BaseException as err:
             logging.error('jmx_exporter(tomcat容器内启动类型)', err);
