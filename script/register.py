@@ -8,7 +8,6 @@ import re
 import json
 import logging
 import xml.sax.handler
-# from urllib import request
 import requests
 
 
@@ -85,7 +84,7 @@ class ConsulCenter(object):
 
     def RegisterService(this, name, host, port, tags=None, instance1=None, agentIp=None, agentCode=None, sourceIp=None):
         info = this.generateRegisterInfo(name, host, port, tags, instance1, agentIp, agentCode, sourceIp)
-        res = requests.put("http://10.8.0.98:8500/v1/catalog/register", data=json.dumps(info))
+        res = requests.put("http://10.2.210.2:8500/v1/catalog/register", data=json.dumps(info))
 
     def generateRegisterInfo(this, name, host, port, tags=None, instance1=None, agentIp="123", agentCode=None,
                              sourceIp=None):
@@ -134,10 +133,28 @@ class ConsulCenter(object):
     def GetInstance(this, tomcatPath):
         # 将路径按照/分组
         pathList = tomcatPath.split("/")
-        firstPath = str(pathList[-1])
-        secoundPath = pathList[-2]
-        thirdPath = pathList[-3]
-        instance = thirdPath + '-' + secoundPath + '-' + firstPath[0:firstPath.index('#')]
+        #避免非甄云环境情况下，报错此处进行容错处理
+        if len(pathList)>=3:
+            firstPath = str(pathList[-1])
+            secoundPath = pathList[-2]
+            thirdPath = pathList[-3]
+            if firstPath.find('#') == -1:
+                instance = thirdPath + '-' + secoundPath + '-' + firstPath
+            else:
+                instance = thirdPath + '-' + secoundPath + '-' + firstPath[0:firstPath.index('#')]
+        elif len(pathList)==2:
+            firstPath = str(pathList[-1])
+            secoundPath = pathList[-2]
+            if firstPath.find('#') == -1:
+                instance = secoundPath + '-' + firstPath
+            else:
+                instance =secoundPath + '-' + firstPath[0:firstPath.index('#')]
+        else:
+            firstPath = str(pathList[-1])
+            if firstPath.find('#') == -1:
+                instance =  firstPath
+            else:
+                instance = firstPath[0:firstPath.index('#')]
         return instance
 
 
@@ -145,7 +162,7 @@ if __name__ == '__main__':
     host_name = socket.gethostname()
     ConsulCenter.console_out()
     # consul主机信息
-    consul_host = "10.8.0.98"
+    consul_host = "10.2.210.2"
     # consul端口
     consul_port = "8500"
     # consul客户端实力
@@ -291,7 +308,6 @@ if __name__ == '__main__':
         try:
             result = re.findall("jmx_.+?\.jar=\d+?:", jmx_exporter, flags=0)
             if len(result) > 0:
-
                 result1= re.findall(r"\d+\.?\d*", jmx_exporter, flags=0)
                 cmd1 = "ps -ef | grep tomcat | grep "+ result1[0]+" | grep -v grep | awk -F '-Dcatalina.base=' '{print $2}' | awk -F ' ' '{print $1}'"
                 # 获取tomcat
@@ -335,7 +351,6 @@ if __name__ == '__main__':
             result = re.findall("jmx_.+?\.jar=\d+?:", jmx_exporter, flags=0)
             if len(result) > 0:
                 result1 = re.findall(r"\d+\.?\d*", jmx_exporter, flags=0)
-
                 cmd1 = "ps -ef | grep tomcat | grep "+ result1[0]+" | grep -v grep | awk -F '-Dcatalina.base=' '{print $2}' | awk -F ' ' '{print $1}'"
                 # 获取tomcat
                 tomcats = os.popen(cmd1)
