@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # !/usr/bin/python
 import consul
@@ -9,6 +10,13 @@ import json
 import logging
 import xml.sax.handler
 import requests
+import platform
+import sys
+
+reload(sys)
+# python默认为ascii编码
+sys.setdefaultencoding('utf8')
+print(platform.python_version())
 
 
 # 继承xml.sax.handler.ContentHandler
@@ -46,6 +54,18 @@ class PortHandler(xml.sax.handler.ContentHandler):
 class ConsulCenter(object):
     global ip;
     ip = None;
+
+    global balck_box_addr
+    balck_box_addr = sys.argv[1]
+    balck_box_addr = json.loads(balck_box_addr)
+
+    # global balck_box_addr
+    # balck_box_addr = {}
+    global consul_addr
+    consul_addr = sys.argv[2]
+    consul_addr = json.loads(consul_addr)
+    global env
+    env = sys.argv[3]
     global list1
     list1 = ['memcached_exporter', 'mysqld_exporter', 'node_exporter', 'statsd_exporter', 'haproxy_exporter',
              'graphite_exporter', 'consul_exporter', 'blackbox_exporter', 'jmx_exporter', 'oracledb_exporter', 'java']
@@ -61,6 +81,11 @@ class ConsulCenter(object):
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(('8.8.8.8', 80))
             ip = s.getsockname()[0]
+            # s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # return socket.inet_ntoa(fcntl.ioctl(
+            #     s.fileno(),
+            #     0x8915,
+            #     struct.pack('256s', ifname[:15]))[20:24])
         finally:
             s.close()
         return ip
@@ -84,34 +109,56 @@ class ConsulCenter(object):
 
     def RegisterService(this, name, host, port, tags=None, instance1=None, agentIp=None, agentCode=None, sourceIp=None):
         info = this.generateRegisterInfo(name, host, port, tags, instance1, agentIp, agentCode, sourceIp)
-        res = requests.put("http://10.2.210.2:8500/v1/catalog/register", data=json.dumps(info))
+        put_string = json.dumps(info)
+        # 可能由于网络波动出现注册失败，失败的话重试10次
+        i = 0
+        while i < 10:
+            try:
+                # 设置read和连接超时时间
+                host = consul_addr['host']
+                port = str(consul_addr['port'])
+                addr = host + ':' + str(port)
+                res = requests.put("http://" + addr + "/v1/agent/service/register", data=put_string, timeout=(5, 5))
+                logging.info(host + ':' + str(port) + '请求成功')
+                return
+            except:
+                logging.error('网络异常：' + host + ':' + str(port))
+                i = i + 1
 
-    def generateRegisterInfo(this, name, host, port, tags=None, instance1=None, agentIp="123", agentCode=None,
+        # put_string="'"+put_string+"'"
+        # cmd ='curl -X PUT -d '+put_string+' http://10.2.210.2:8500/v1/agent/service/register'
+        # res = os.popen(cmd)
+
+    def generateRegisterInfo(this, name, host, port, tags=None, instance1=None, agentIp=None, agentCode=None,
                              sourceIp=None):
+
         # 基于已有数据构造json结构，采用http客户端的形式发送请求
-        NodeMeta = {"agentIp": agentIp}
+        Meta = {"agentIp": agentIp}
         if len(instance1) > 0:
-            NodeMeta["instance"] = instance1
+            Meta["instance"] = instance1
         if len(agentCode) > 0:
-            NodeMeta["agentCode"] = agentCode
+            Meta["agentCode"] = agentCode
         if len(sourceIp) > 0:
-            NodeMeta["sourceIp"] = sourceIp
-        Service = {"ID": name}
-        Service["Service"] = name
-        Service["Port"] = port
-        Service["Tags"] = tags
-        info = {"Node": name}
-        info["Address"] = host
-        info["NodeMeta"] = NodeMeta
-        info["Service"] = Service
-        Checks = []
-        check = {"Name": name}
-        check["status"] = "passing"
-        Definition = {"http": "https://www.google.com"}
-        Definition["interval"] = "30s"
-        check["Definition"] = Definition
-        Checks.append(check)
-        info["Checks"] = Checks
+            Meta["sourceIp"] = sourceIp
+        if len(env) > 0:
+            Meta["env"] = env
+        info = {"id": name}
+        info["name"] = name
+        info["address"] = host
+        info["port"] = port
+        tags = tags
+
+        if env not in tags:
+            tags.append(env)
+        info["tags"] = tags
+        info["Meta"] = Meta
+        checks = []
+        check = {"tcp": host + ":" + str(port)}
+        check["interval"] = "5s"
+        check["timeout"] = "30s"
+        check["DeregisterCriticalServiceAfter"] = "30s"
+        checks.append(check)
+        info["checks"] = checks
         return info
 
     def getTags(this, name, host, port, tags=None):
@@ -122,19 +169,32 @@ class ConsulCenter(object):
     def PutValue(this, key, value):
         this._consul.kv.put(key, value)
 
-    def GetService(this, name):
-        services = this._consul.agent.services()
-        service = services.get(name)
-        if not service:
-            return None, None
-        addr = "{0}:{1}".format(service['Address'], service['Port'])
-        return service, addr
+    @staticmethod
+    def GetService():
+        res = None
+        try:
+            host = consul_addr['host']
+            port = str(consul_addr['port'])
+            addr = host + ':' + str(port)
+            payload = {'dc': 'dc1'}
+            name ='blackbox_exporter'+ "_" + env
+            res = requests.get("http://" + addr + "/v1/health/service/"+name, params=payload)
+
+        except Exception as err:
+            logging.error('普通类型exporter注册异常', err);
+        if res == None:
+            return None
+        state = json.loads(res.text)
+        if len(state) == 0:
+            return None
+        else:
+            return state[0]["Service"]["Tags"]
 
     def GetInstance(this, tomcatPath):
         # 将路径按照/分组
         pathList = tomcatPath.split("/")
-        #避免非甄云环境情况下，报错此处进行容错处理
-        if len(pathList)>=3:
+        # 避免非甄云环境情况下，报错此处进行容错处理
+        if len(pathList) >= 3:
             firstPath = str(pathList[-1])
             secoundPath = pathList[-2]
             thirdPath = pathList[-3]
@@ -142,17 +202,17 @@ class ConsulCenter(object):
                 instance = thirdPath + '-' + secoundPath + '-' + firstPath
             else:
                 instance = thirdPath + '-' + secoundPath + '-' + firstPath[0:firstPath.index('#')]
-        elif len(pathList)==2:
+        elif len(pathList) == 2:
             firstPath = str(pathList[-1])
             secoundPath = pathList[-2]
             if firstPath.find('#') == -1:
                 instance = secoundPath + '-' + firstPath
             else:
-                instance =secoundPath + '-' + firstPath[0:firstPath.index('#')]
+                instance = secoundPath + '-' + firstPath[0:firstPath.index('#')]
         else:
             firstPath = str(pathList[-1])
             if firstPath.find('#') == -1:
-                instance =  firstPath
+                instance = firstPath
             else:
                 instance = firstPath[0:firstPath.index('#')]
         return instance
@@ -162,9 +222,11 @@ if __name__ == '__main__':
     host_name = socket.gethostname()
     ConsulCenter.console_out()
     # consul主机信息
-    consul_host = "10.2.210.2"
+    consul_host = consul_addr['host']
     # consul端口
-    consul_port = "8500"
+    print(',tttttttttttt')
+    consul_port = str(consul_addr['port'])
+    print(',consul_port')
     # consul客户端实力
     consul_client = ConsulCenter(consul_host, consul_port)
     logging.info('consul连接成功')
@@ -197,73 +259,77 @@ if __name__ == '__main__':
                             if "LISTEN" in s:
                                 service_port = int(temp[3])
                                 if p.name() == "blackbox_exporter":
-                                    # 获取tomcat
-                                    tomcats = os.popen(search_tomcat_command)
-                                    # 按行读取
-                                    tomcats = tomcats.readlines()
-                                    tags = []
-                                    # 构造xml解析器
-                                    parser = xml.sax.make_parser()
-                                    handler = PortHandler()
-                                    parser.setContentHandler(handler)
-                                    for tomcat in tomcats:
-                                        # 获取配置文件的真实路径
-                                        tomcatPath = tomcat.replace('\n', '')
-                                        instance = consul_client.GetInstance(tomcatPath)
-                                        realConfPath = tomcatPath + '/conf/server.xml'
-                                        if os.path.isfile(realConfPath):
-                                            parser.parse(realConfPath)
-                                            if handler.mapping.__contains__("path"):
-                                                url = "https://" + service_host + ":" + handler.mapping['HTTP/1.1'] + \
-                                                      handler.mapping['path']
-                                                sourceIp = service_host
-                                                dic = {"endpoint": url}
-                                                dic["__param_target"] = url
-                                                dic["hostName"] = host_name
-                                                dic["instance"] = instance
-                                                dic["sourceIp"] = sourceIp
-                                                if handler.mapping['path'] == '/':
-                                                    tags.append(handler.mapping['HTTP/1.1'])
-                                                    consul_client.PutValue(str(handler.mapping['HTTP/1.1']),
-                                                                           json.dumps(dic))
+                                    if len(balck_box_addr) == 0:
+                                        # 获取tomcat
+                                        tomcats = os.popen(search_tomcat_command)
+                                        # 按行读取
+                                        tomcats = tomcats.readlines()
+                                        tags = []
+                                        # 构造xml解析器
+                                        parser = xml.sax.make_parser()
+                                        handler = PortHandler()
+                                        parser.setContentHandler(handler)
+                                        for tomcat in tomcats:
+                                            # 获取配置文件的真实路径
+                                            tomcatPath = tomcat.replace('\n', '')
+                                            instance = consul_client.GetInstance(tomcatPath)
+                                            realConfPath = tomcatPath + '/conf/server.xml'
+                                            if os.path.isfile(realConfPath):
+                                                parser.parse(realConfPath)
+                                                if handler.mapping.__contains__("path"):
+                                                    url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1'] + \
+                                                          handler.mapping['path']
+                                                    sourceIp = service_host
+                                                    dic = {"endpoint": url}
+                                                    dic["__param_target"] = url
+                                                    dic["hostName"] = host_name
+                                                    dic["instance"] = instance
+                                                    dic["sourceIp"] = sourceIp
+                                                    if handler.mapping['path'] == '/':
+                                                        tags.append(handler.mapping['HTTP/1.1'])
+                                                        consul_client.PutValue(
+                                                            service_host.replace('.', '_') + '/' + str(
+                                                                handler.mapping['HTTP/1.1']),
+                                                            json.dumps(dic))
+                                                    else:
+                                                        tags.append(
+                                                            handler.mapping['HTTP/1.1'] + handler.mapping['path'])
+                                                        consul_client.PutValue(
+                                                            service_host.replace('.', '_') + '/' + handler.mapping[
+                                                                'HTTP/1.1'] + handler.mapping['path'],
+                                                            json.dumps(dic))
                                                 else:
-                                                    tags.append(handler.mapping['HTTP/1.1'] + handler.mapping['path'])
-                                                    consul_client.PutValue(
-                                                        handler.mapping['HTTP/1.1'] + handler.mapping['path'],
-                                                        json.dumps(dic))
-                                            else:
-                                                url = "https://" + service_host + ":" + handler.mapping['HTTP/1.1']
-                                                sourceIp = service_host
-                                                dic = {"endpoint": url}
-                                                dic["__param_target"] = url
-                                                dic["hostName"] = host_name
-                                                dic["instance"] = instance
-                                                dic["sourceIp"] = sourceIp
-                                                tags.append(handler.mapping['HTTP/1.1'])
-                                                consul_client.PutValue(handler.mapping['HTTP/1.1'],
-                                                                       json.dumps(dic))
-                                    if len(tags) == 0:
-                                        tags.append("NoneTomcat")
-                                    res = consul_client.GetService(name)
-                                    if res[0] != None:
-                                        tagsdict = res[0]
-                                        inuseTags = tagsdict.get('Tags')
-                                        # 遍历当前的tags，如果当前tags的元素未出现在已经使用的tags中，则进行拼接
-                                        for tag in tags:
-                                            if tag in inuseTags:
-                                                logging.info(tag)
-                                            else:
-                                                inuseTags.append(tag)
-                                        agentIp = service_host
-                                        logging.info('blockboxexporter注册1');
-                                        consul_client.RegisterService(
-                                            name, service_host, service_port, inuseTags,"",agentIp,"","")
-                                        logging.info('blockboxexporter注册成功');
-                                    else:
-                                        agentIp = service_host
-                                        logging.info('blockboxexporter注册2');
-                                        consul_client.RegisterService(name, service_host, service_port, tags,"",agentIp,"","")
-                                        logging.info('blockboxexporter注册成功');
+                                                    url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1']
+                                                    sourceIp = service_host
+                                                    dic = {"endpoint": url}
+                                                    dic["__param_target"] = url
+                                                    dic["hostName"] = host_name
+                                                    dic["instance"] = instance
+                                                    dic["sourceIp"] = sourceIp
+                                                    tags.append(service_host.replace('.', '_') + '/' + handler.mapping[
+                                                        'HTTP/1.1'])
+                                                    consul_client.PutValue(handler.mapping['HTTP/1.1'],
+                                                                           json.dumps(dic))
+                                        if len(tags) == 0:
+                                            tags.append("NoneTomcat")
+                                        res = ConsulCenter.GetService()
+                                        if res != None:
+                                            inuseTags = res
+                                            # 遍历当前的tags，如果当前tags的元素未出现在已经使用的tags中，则进行拼接
+                                            for tag in tags:
+                                                if tag in inuseTags:
+                                                    logging.info(tag)
+                                                else:
+                                                    inuseTags.append(tag)
+                                            agentIp = service_host
+                                            consul_client.RegisterService(name+ "_" + service_host.replace('.', '_') + "_" + str(service_port), service_host, service_port, inuseTags,
+                                                                          "", agentIp, "", "")
+                                            logging.info('blockboxexporter注册成功');
+                                        else:
+                                            agentIp = service_host
+                                            consul_client.RegisterService(name+ "_" + service_host.replace('.', '_') + "_" + str(service_port), service_host, service_port, tags, "",
+                                                                          agentIp, "", "")
+                                            logging.info('blockboxexporter注册成功');
 
                                 elif p.name() == "node_exporter":
                                     # 非blackbox类型的tag还是返回agentCode
@@ -297,6 +363,7 @@ if __name__ == '__main__':
                             logging.error('普通类型exporter注册异常', err);
                         else:
                             continue
+                    a.close()
             else:
                 continue
 
@@ -308,8 +375,9 @@ if __name__ == '__main__':
         try:
             result = re.findall("jmx_.+?\.jar=\d+?:", jmx_exporter, flags=0)
             if len(result) > 0:
-                result1= re.findall(r"\d+\.?\d*", jmx_exporter, flags=0)
-                cmd1 = "ps -ef | grep tomcat | grep "+ result1[0]+" | grep -v grep | awk -F '-Dcatalina.base=' '{print $2}' | awk -F ' ' '{print $1}'"
+                result1 = re.findall(r"\d+\.?\d*", jmx_exporter, flags=0)
+                cmd1 = "ps -ef | grep tomcat | grep " + result1[
+                    0] + " | grep -v grep | awk -F '-Dcatalina.base=' '{print $2}' | awk -F ' ' '{print $1}'"
                 # 获取tomcat
                 tomcats = os.popen(cmd1)
                 # 按行读取
@@ -342,6 +410,7 @@ if __name__ == '__main__':
                 logging.info(service_host + ":" + str(service_port) + ":" + name + '注册成功');
         except BaseException as err:
             logging.error('jmx_exporter(java-jar类型)', err);
+    jmx.close()
     # 针对容器内启动的jmx_exporter
     cmd = "ps -ef | grep jmx_prometheus_javaagent"
     jmx = os.popen(cmd)
@@ -351,7 +420,8 @@ if __name__ == '__main__':
             result = re.findall("jmx_.+?\.jar=\d+?:", jmx_exporter, flags=0)
             if len(result) > 0:
                 result1 = re.findall(r"\d+\.?\d*", jmx_exporter, flags=0)
-                cmd1 = "ps -ef | grep tomcat | grep "+ result1[0]+" | grep -v grep | awk -F '-Dcatalina.base=' '{print $2}' | awk -F ' ' '{print $1}'"
+                cmd1 = "ps -ef | grep tomcat | grep " + result1[
+                    0] + " | grep -v grep | awk -F '-Dcatalina.base=' '{print $2}' | awk -F ' ' '{print $1}'"
                 # 获取tomcat
                 tomcats = os.popen(cmd1)
                 # 按行读取
@@ -361,7 +431,7 @@ if __name__ == '__main__':
                 parser = xml.sax.make_parser()
                 handler = PortHandler()
                 parser.setContentHandler(handler)
-                instance=None
+                instance = None
                 for tomcat in tomcats:
                     # 获取配置文件的真实路径
                     tomcatPath = tomcat.replace('\n', '')
@@ -384,3 +454,86 @@ if __name__ == '__main__':
                 logging.info(service_host + ":" + str(service_port) + ":" + name + '注册成功');
         except BaseException as err:
             logging.error('jmx_exporter(tomcat容器内启动类型)', err);
+    jmx.close()
+
+    # 针对统一配置的blackbox进行处理
+    if len(balck_box_addr) > 0:
+        name = 'blackbox_exporter'
+        # 获取tomcat
+        cmd = os.popen(search_tomcat_command)
+        # 按行读取
+        tomcats = cmd.readlines()
+        tags = []
+        # 构造xml解析器
+        parser = xml.sax.make_parser()
+        handler = PortHandler()
+        parser.setContentHandler(handler)
+        for tomcat in tomcats:
+            # 获取配置文件的真实路径
+            tomcatPath = tomcat.replace('\n', '')
+            instance = consul_client.GetInstance(tomcatPath)
+            realConfPath = tomcatPath + '/conf/server.xml'
+            if os.path.isfile(realConfPath):
+                parser.parse(realConfPath)
+                if handler.mapping.__contains__("path"):
+                    url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1'] + \
+                          handler.mapping['path']
+                    sourceIp = service_host
+                    dic = {"endpoint": url}
+                    dic["__param_target"] = url
+                    dic["hostName"] = host_name
+                    dic["instance"] = instance
+                    dic["sourceIp"] = sourceIp
+                    if handler.mapping['path'] == '/':
+                        tags.append(env+'/'+service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'])
+                        consul_client.PutValue(env+'/'+service_host.replace('.', '_') + '/' + str(handler.mapping['HTTP/1.1']),
+                                               json.dumps(dic))
+                    else:
+                        tags.append(
+                            env+'/'+service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'] + handler.mapping[
+                                'path'])
+                        consul_client.PutValue(
+                            env+'/'+service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'] + handler.mapping[
+                                'path'],
+                            json.dumps(dic))
+                else:
+                    url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1']
+                    sourceIp = service_host
+                    dic = {"endpoint": url}
+                    dic["__param_target"] = url
+                    dic["hostName"] = host_name
+                    dic["instance"] = instance
+                    dic["sourceIp"] = sourceIp
+                    tags.append(env+'/'+service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'])
+                    consul_client.PutValue(env+'/'+service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'],
+                                           json.dumps(dic))
+        if len(tags) == 0:
+            tags.append("NoneTomcat")
+        res = ConsulCenter.GetService()
+        if res != None:
+            inuseTags = res
+            # 遍历当前的tags，如果当前tags的元素未出现在已经使用的tags中，则进行拼接
+            for tag in tags:
+                if tag in inuseTags:
+                    logging.info(tag)
+                else:
+                    inuseTags.append(tag)
+            agentIp = service_host
+            #service_host="192.168.3.119"
+            #service_port=9116
+            box_host = balck_box_addr['host']
+            box_host = box_host.encode("utf-8")
+            box_port = balck_box_addr['port']
+            consul_client.RegisterService(name + "_" + env, box_host, box_port, inuseTags, "", agentIp, "", "")
+            logging.info('tomcat健康检查注册成功');
+
+        else:
+            agentIp = service_host
+            #service_host="192.168.3.119"
+            #service_port=9116
+            box_host = balck_box_addr['host']
+            box_host = box_host.encode("utf-8")
+            box_port = balck_box_addr['port']
+            consul_client.RegisterService(name + "_" + env, box_host, box_port, tags, "", agentIp, "", "")
+            logging.info('tomcat健康检查注册成功');
+        cmd.close()
