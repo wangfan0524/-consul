@@ -21,8 +21,11 @@ print(platform.python_version())
 
 # 继承xml.sax.handler.ContentHandler
 class PortHandler(xml.sax.handler.ContentHandler):
+    global mapping_list
+    mapping_list = []
     def __init__(self):
         self.mapping = {}
+
 
     def startElement(self, name, attrs):
         # 获取Connector
@@ -59,16 +62,20 @@ class ConsulCenter(object):
     balck_box_addr = sys.argv[1]
     balck_box_addr = json.loads(balck_box_addr)
 
-    # global balck_box_addr
-    # balck_box_addr = {}
     global consul_addr
     consul_addr = sys.argv[2]
     consul_addr = json.loads(consul_addr)
     global env
     env = sys.argv[3]
+
+    global job_code
+    job_code = sys.argv[4]
     global list1
     list1 = ['memcached_exporter', 'mysqld_exporter', 'node_exporter', 'statsd_exporter', 'haproxy_exporter',
              'graphite_exporter', 'consul_exporter', 'blackbox_exporter', 'jmx_exporter', 'oracledb_exporter', 'java']
+
+    global category_list
+    category_list = {'blackbox_exporter':'PROBE/HTTP','jmx_exporter':'WEB/TOMCAT','oracledb_exporter':'RDBMS/ORACLE','mysqld_exporter':'RDBMS/MYSQL' ,'node_exporter':'OS/LINUX'}
 
     global search_tomcat_command
     search_tomcat_command = "ps -ef | grep tomcat | grep Dcatalina | grep -v grep | awk -F '-Dcatalina.base=' '{print $2}' | awk -F ' ' '{print $1}'"
@@ -77,17 +84,20 @@ class ConsulCenter(object):
         this._consul = consul.Consul(host, port)
 
     def get_host_ip(this):
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(('8.8.8.8', 80))
-            ip = s.getsockname()[0]
-            # s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            # return socket.inet_ntoa(fcntl.ioctl(
-            #     s.fileno(),
-            #     0x8915,
-            #     struct.pack('256s', ifname[:15]))[20:24])
-        finally:
-            s.close()
+        if os.getenv('IP_ADDR') is not None:
+            ip = os.getenv('IP_ADDR')
+        else:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(('8.8.8.8', 80))
+                ip = s.getsockname()[0]
+                # s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                # return socket.inet_ntoa(fcntl.ioctl(
+                #     s.fileno(),
+                #     0x8915,
+                #     struct.pack('256s', ifname[:15]))[20:24])
+            finally:
+                s.close()
         return ip
 
     @staticmethod
@@ -138,16 +148,24 @@ class ConsulCenter(object):
             Meta["instance"] = instance1
         if len(agentCode) > 0:
             Meta["agentCode"] = agentCode
+            Meta["categoryCode"]=category_list[str(agentCode)]
+
         if len(sourceIp) > 0:
             Meta["sourceIp"] = sourceIp
         if len(env) > 0:
-            Meta["env"] = env
+            Meta["envCode"] = env
+        if "blackbox_exporter" in  name:
+            if len(job_code)>0:
+                Meta["jobCode"] = job_code
+
+
+        Meta["tenantId"] = "0"
+
         info = {"id": name}
         info["name"] = name
         info["address"] = host
         info["port"] = port
         tags = tags
-
         if env not in tags:
             tags.append(env)
         info["tags"] = tags
@@ -224,9 +242,7 @@ if __name__ == '__main__':
     # consul主机信息
     consul_host = consul_addr['host']
     # consul端口
-    print(',tttttttttttt')
     consul_port = str(consul_addr['port'])
-    print(',consul_port')
     # consul客户端实力
     consul_client = ConsulCenter(consul_host, consul_port)
     logging.info('consul连接成功')
@@ -268,6 +284,7 @@ if __name__ == '__main__':
                                         # 构造xml解析器
                                         parser = xml.sax.make_parser()
                                         handler = PortHandler()
+
                                         parser.setContentHandler(handler)
                                         for tomcat in tomcats:
                                             # 获取配置文件的真实路径
@@ -313,6 +330,7 @@ if __name__ == '__main__':
                                         if len(tags) == 0:
                                             tags.append("NoneTomcat")
                                         res = ConsulCenter.GetService()
+                                        agentCode = "blackbox_exporter"
                                         if res != None:
                                             inuseTags = res
                                             # 遍历当前的tags，如果当前tags的元素未出现在已经使用的tags中，则进行拼接
@@ -322,13 +340,15 @@ if __name__ == '__main__':
                                                 else:
                                                     inuseTags.append(tag)
                                             agentIp = service_host
+
                                             consul_client.RegisterService(name+ "_" + service_host.replace('.', '_') + "_" + str(service_port), service_host, service_port, inuseTags,
-                                                                          "", agentIp, "", "")
+                                                                          "", agentIp, agentCode, "")
                                             logging.info('blockboxexporter注册成功');
                                         else:
                                             agentIp = service_host
+
                                             consul_client.RegisterService(name+ "_" + service_host.replace('.', '_') + "_" + str(service_port), service_host, service_port, tags, "",
-                                                                          agentIp, "", "")
+                                                                          agentIp, agentCode, "")
                                             logging.info('blockboxexporter注册成功');
 
                                 elif p.name() == "node_exporter":
@@ -467,6 +487,7 @@ if __name__ == '__main__':
         # 构造xml解析器
         parser = xml.sax.make_parser()
         handler = PortHandler()
+
         parser.setContentHandler(handler)
         for tomcat in tomcats:
             # 获取配置文件的真实路径
@@ -475,6 +496,7 @@ if __name__ == '__main__':
             realConfPath = tomcatPath + '/conf/server.xml'
             if os.path.isfile(realConfPath):
                 parser.parse(realConfPath)
+                print(handler.mapping_list)
                 if handler.mapping.__contains__("path"):
                     url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1'] + \
                           handler.mapping['path']
@@ -485,15 +507,15 @@ if __name__ == '__main__':
                     dic["instance"] = instance
                     dic["sourceIp"] = sourceIp
                     if handler.mapping['path'] == '/':
-                        tags.append(env+'/'+service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'])
-                        consul_client.PutValue(env+'/'+service_host.replace('.', '_') + '/' + str(handler.mapping['HTTP/1.1']),
+                        tags.append(service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'])
+                        consul_client.PutValue(service_host.replace('.', '_') + '/' + str(handler.mapping['HTTP/1.1']),
                                                json.dumps(dic))
                     else:
                         tags.append(
-                            env+'/'+service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'] + handler.mapping[
+                            service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'] + handler.mapping[
                                 'path'])
                         consul_client.PutValue(
-                            env+'/'+service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'] + handler.mapping[
+                            service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'] + handler.mapping[
                                 'path'],
                             json.dumps(dic))
                 else:
@@ -504,12 +526,16 @@ if __name__ == '__main__':
                     dic["hostName"] = host_name
                     dic["instance"] = instance
                     dic["sourceIp"] = sourceIp
-                    tags.append(env+'/'+service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'])
-                    consul_client.PutValue(env+'/'+service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'],
+                    tags.append(service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'])
+                    consul_client.PutValue(service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'],
                                            json.dumps(dic))
         if len(tags) == 0:
             tags.append("NoneTomcat")
         res = ConsulCenter.GetService()
+        box_host = balck_box_addr['host']
+        box_host = box_host.encode("utf-8")
+        box_port = balck_box_addr['port']
+        agentCode = "blackbox_exporter"
         if res != None:
             inuseTags = res
             # 遍历当前的tags，如果当前tags的元素未出现在已经使用的tags中，则进行拼接
@@ -519,21 +545,12 @@ if __name__ == '__main__':
                 else:
                     inuseTags.append(tag)
             agentIp = service_host
-            #service_host="192.168.3.119"
-            #service_port=9116
-            box_host = balck_box_addr['host']
-            box_host = box_host.encode("utf-8")
-            box_port = balck_box_addr['port']
-            consul_client.RegisterService(name + "_" + env, box_host, box_port, inuseTags, "", agentIp, "", "")
+
+            consul_client.RegisterService(name + "_" + env, box_host, box_port, inuseTags, "", agentIp, agentCode, "")
             logging.info('tomcat健康检查注册成功');
 
         else:
             agentIp = service_host
-            #service_host="192.168.3.119"
-            #service_port=9116
-            box_host = balck_box_addr['host']
-            box_host = box_host.encode("utf-8")
-            box_port = balck_box_addr['port']
-            consul_client.RegisterService(name + "_" + env, box_host, box_port, tags, "", agentIp, "", "")
+            consul_client.RegisterService(name + "_" + env, box_host, box_port, tags, "", agentIp, agentCode, "")
             logging.info('tomcat健康检查注册成功');
         cmd.close()
