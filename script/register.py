@@ -21,6 +21,11 @@ print(platform.python_version())
 
 # 继承xml.sax.handler.ContentHandler
 class PortHandler(xml.sax.handler.ContentHandler):
+    count_context = 0
+
+    route_list = []
+    route = {}
+
     def __init__(self):
         self.mapping = {}
 
@@ -35,7 +40,9 @@ class PortHandler(xml.sax.handler.ContentHandler):
         if name == "Context":
             self.buffer = ""
             self.path = attrs["path"]
-
+            route = {"path": attrs["path"]}
+            route["docBase"] = attrs["docBase"]
+            self.route_list.append(route)
     def endElement(self, name):
         if name == "Connector":
             self.inTitle = False
@@ -47,6 +54,7 @@ class PortHandler(xml.sax.handler.ContentHandler):
             else:
                 self.mapping[self.protocol] = self.port
         if name == "Context":
+            self.count_context =self.count_context+1
             self.inTitle = False
             self.mapping['path'] = self.path
             return handler.mapping["path"]
@@ -494,38 +502,71 @@ if __name__ == '__main__':
             realConfPath = tomcatPath + '/conf/server.xml'
             if os.path.isfile(realConfPath):
                 parser.parse(realConfPath)
-                if handler.mapping.__contains__("path"):
-                    url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1'] + \
-                          handler.mapping['path']
-                    sourceIp = service_host
-                    dic = {"endpoint": url}
-                    dic["__param_target"] = url
-                    dic["hostName"] = host_name
-                    dic["instance"] = instance
-                    dic["sourceIp"] = sourceIp
-                    if handler.mapping['path'] == '/':
-                        tags.append(service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'])
-                        consul_client.PutValue(service_host.replace('.', '_') + '/' + str(handler.mapping['HTTP/1.1']),
-                                               json.dumps(dic))
-                    else:
-                        tags.append(
-                            service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'] + handler.mapping[
-                                'path'])
-                        consul_client.PutValue(
-                            service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'] + handler.mapping[
-                                'path'],
-                            json.dumps(dic))
+                #如果配置了两个路径，则去匹配docBase包含/u01/xxx/webapp/webRoot，否则就取本身的
+                if len(handler.route_list)>1:
+                    for route in handler.route_list:
+                        if len(re.findall(".*u01.*?/webapp.*", route["docBase"], flags=0))>0:
+                            handler.mapping['path']=route["path"]
+                            url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1'] + \
+                                  handler.mapping['path']
+                            sourceIp = service_host
+                            dic = {"endpoint": url}
+                            dic["__param_target"] = url
+                            dic["hostName"] = host_name
+                            dic["instance"] = instance
+                            dic["sourceIp"] = sourceIp
+                            if handler.mapping['path'] == '/':
+                                tags.append(service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'])
+                                consul_client.PutValue(
+                                    service_host.replace('.', '_') + '/' + str(handler.mapping['HTTP/1.1']),
+                                    json.dumps(dic))
+                            else:
+                                tags.append(
+                                    service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'] +
+                                    handler.mapping[
+                                        'path'])
+                                consul_client.PutValue(
+                                    service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'] +
+                                    handler.mapping[
+                                        'path'],
+                                    json.dumps(dic))
                 else:
-                    url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1']
-                    sourceIp = service_host
-                    dic = {"endpoint": url}
-                    dic["__param_target"] = url
-                    dic["hostName"] = host_name
-                    dic["instance"] = instance
-                    dic["sourceIp"] = sourceIp
-                    tags.append(service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'])
-                    consul_client.PutValue(service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'],
-                                           json.dumps(dic))
+                    if handler.mapping.__contains__("path"):
+                        url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1'] + \
+                              handler.mapping['path']
+                        sourceIp = service_host
+                        dic = {"endpoint": url}
+                        dic["__param_target"] = url
+                        dic["hostName"] = host_name
+                        dic["instance"] = instance
+                        dic["sourceIp"] = sourceIp
+                        if handler.mapping['path'] == '/':
+                            tags.append(service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'])
+                            consul_client.PutValue(
+                                service_host.replace('.', '_') + '/' + str(handler.mapping['HTTP/1.1']),
+                                json.dumps(dic))
+                        else:
+                            tags.append(
+                                service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'] + handler.mapping[
+                                    'path'])
+                            consul_client.PutValue(
+                                service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'] + handler.mapping[
+                                    'path'],
+                                json.dumps(dic))
+                    else:
+                        url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1']
+                        sourceIp = service_host
+                        dic = {"endpoint": url}
+                        dic["__param_target"] = url
+                        dic["hostName"] = host_name
+                        dic["instance"] = instance
+                        dic["sourceIp"] = sourceIp
+                        tags.append(service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'])
+                        consul_client.PutValue(service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'],
+                                               json.dumps(dic))
+
+
+
         if len(tags) == 0:
             tags.append("NoneTomcat")
         res = ConsulCenter.GetService()
