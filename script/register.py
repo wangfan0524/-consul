@@ -21,8 +21,6 @@ print(platform.python_version())
 
 # 继承xml.sax.handler.ContentHandler
 class PortHandler(xml.sax.handler.ContentHandler):
-    global mapping_list
-    mapping_list = []
     def __init__(self):
         self.mapping = {}
 
@@ -496,7 +494,6 @@ if __name__ == '__main__':
             realConfPath = tomcatPath + '/conf/server.xml'
             if os.path.isfile(realConfPath):
                 parser.parse(realConfPath)
-                print(handler.mapping_list)
                 if handler.mapping.__contains__("path"):
                     url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1'] + \
                           handler.mapping['path']
