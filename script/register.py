@@ -23,7 +23,7 @@ print(platform.python_version())
 class PortHandler(xml.sax.handler.ContentHandler):
     count_context = 0
 
-    route_list = []
+    route_list =[]
     route = {}
 
     def __init__(self):
@@ -86,12 +86,14 @@ class ConsulCenter(object):
     global search_tomcat_command
     search_tomcat_command = "ps -ef | grep tomcat | grep Dcatalina | grep -v grep | awk -F '-Dcatalina.base=' '{print $2}' | awk -F ' ' '{print $1}'"
 
+    global host_name
+    host_name = socket.gethostname()
     def __init__(this, host, port):
         this._consul = consul.Consul(host, port)
 
     def get_host_ip(this):
-        if os.getenv('IP_ADDR') is not None:
-            ip = os.getenv('IP_ADDR')
+        if os.getenv('HOPS_IP_ADDR') is not None:
+            ip = os.getenv('HOPS_IP_ADDR')
         else:
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -155,7 +157,6 @@ class ConsulCenter(object):
         if len(agentCode) > 0:
             Meta["agentCode"] = agentCode
             Meta["categoryCode"]=category_list[str(agentCode)]
-
         if len(sourceIp) > 0:
             Meta["sourceIp"] = sourceIp
         if len(env) > 0:
@@ -163,7 +164,8 @@ class ConsulCenter(object):
         if "blackbox_exporter" in  name:
             if len(job_code)>0:
                 Meta["jobCode"] = job_code
-
+        if len(host_name)>0:
+            Meta["hostName"] = host_name
 
         Meta["tenantId"] = "0"
 
@@ -243,7 +245,7 @@ class ConsulCenter(object):
 
 
 if __name__ == '__main__':
-    host_name = socket.gethostname()
+
     ConsulCenter.console_out()
     # consul主机信息
     consul_host = consul_addr['host']
@@ -304,7 +306,7 @@ if __name__ == '__main__':
                                                           handler.mapping['path']
                                                     sourceIp = service_host
                                                     dic = {"endpoint": url}
-                                                    dic["__param_target"] = url
+                                                    dic["envCode"] = env
                                                     dic["hostName"] = host_name
                                                     dic["instance"] = instance
                                                     dic["sourceIp"] = sourceIp
@@ -325,7 +327,7 @@ if __name__ == '__main__':
                                                     url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1']
                                                     sourceIp = service_host
                                                     dic = {"endpoint": url}
-                                                    dic["__param_target"] = url
+                                                    dic["envCode"] = env
                                                     dic["hostName"] = host_name
                                                     dic["instance"] = instance
                                                     dic["sourceIp"] = sourceIp
@@ -333,11 +335,9 @@ if __name__ == '__main__':
                                                         'HTTP/1.1'])
                                                     consul_client.PutValue(handler.mapping['HTTP/1.1'],
                                                                            json.dumps(dic))
-                                        if len(tags) == 0:
-                                            tags.append("NoneTomcat")
                                         res = ConsulCenter.GetService()
                                         agentCode = "blackbox_exporter"
-                                        if res != None:
+                                        if res != None and len(res)>0:
                                             inuseTags = res
                                             # 遍历当前的tags，如果当前tags的元素未出现在已经使用的tags中，则进行拼接
                                             for tag in tags:
@@ -394,6 +394,7 @@ if __name__ == '__main__':
                 continue
 
     # 针对jmx_exporter
+    #cmd = "ps -ef | grep jmx_exporter | awk '{print $1}'"
     cmd = "ps -ef | grep jmx_exporter"
     jmx = os.popen(cmd)
     jmx_exporters = jmx.readlines()
@@ -401,9 +402,10 @@ if __name__ == '__main__':
         try:
             result = re.findall("jmx_.+?\.jar=\d+?:", jmx_exporter, flags=0)
             if len(result) > 0:
-                result1 = re.findall(r"\d+\.?\d*", jmx_exporter, flags=0)
-                cmd1 = "ps -ef | grep tomcat | grep " + result1[
-                    0] + " | grep -v grep | awk -F '-Dcatalina.base=' '{print $2}' | awk -F ' ' '{print $1}'"
+                #将ps -ef | grep命令的返回值进行正则处理，将多个空格替换为一个空格，方便后续获取PID
+                result2 = re.sub(' +', ' ', jmx_exporter).split(' ')
+                #result1 = re.findall(r"\d+\.?\d*", jmx_exporter, flags=0)
+                cmd1 = "ps -ef | grep tomcat | grep " + result2[1] + " | grep -v grep | awk -F '-Dcatalina.base=' '{print $2}' | awk -F ' ' '{print $1}'"
                 # 获取tomcat
                 tomcats = os.popen(cmd1)
                 # 按行读取
@@ -445,9 +447,8 @@ if __name__ == '__main__':
         try:
             result = re.findall("jmx_.+?\.jar=\d+?:", jmx_exporter, flags=0)
             if len(result) > 0:
-                result1 = re.findall(r"\d+\.?\d*", jmx_exporter, flags=0)
-                cmd1 = "ps -ef | grep tomcat | grep " + result1[
-                    0] + " | grep -v grep | awk -F '-Dcatalina.base=' '{print $2}' | awk -F ' ' '{print $1}'"
+                result2 = re.sub(' +', ' ', jmx_exporter).split(' ')
+                cmd1 = "ps -ef | grep tomcat | grep " + result2[0] + " | grep -v grep | awk -F '-Dcatalina.base=' '{print $2}' | awk -F ' ' '{print $1}'"
                 # 获取tomcat
                 tomcats = os.popen(cmd1)
                 # 按行读取
@@ -511,7 +512,7 @@ if __name__ == '__main__':
                                   handler.mapping['path']
                             sourceIp = service_host
                             dic = {"endpoint": url}
-                            dic["__param_target"] = url
+                            dic["envCode"] = env
                             dic["hostName"] = host_name
                             dic["instance"] = instance
                             dic["sourceIp"] = sourceIp
@@ -536,7 +537,7 @@ if __name__ == '__main__':
                               handler.mapping['path']
                         sourceIp = service_host
                         dic = {"endpoint": url}
-                        dic["__param_target"] = url
+                        dic["envCode"] = env
                         dic["hostName"] = host_name
                         dic["instance"] = instance
                         dic["sourceIp"] = sourceIp
@@ -557,18 +558,14 @@ if __name__ == '__main__':
                         url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1']
                         sourceIp = service_host
                         dic = {"endpoint": url}
-                        dic["__param_target"] = url
+                        dic["envCode"] = env
                         dic["hostName"] = host_name
                         dic["instance"] = instance
                         dic["sourceIp"] = sourceIp
                         tags.append(service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'])
                         consul_client.PutValue(service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'],
                                                json.dumps(dic))
-
-
-
-        if len(tags) == 0:
-            tags.append("NoneTomcat")
+                handler.route_list=[]
         res = ConsulCenter.GetService()
         box_host = balck_box_addr['host']
         box_host = box_host.encode("utf-8")
@@ -582,6 +579,7 @@ if __name__ == '__main__':
                     logging.info(tag)
                 else:
                     inuseTags.append(tag)
+                    logging.info(tag)
             agentIp = service_host
 
             consul_client.RegisterService(name + "_" + env, box_host, box_port, inuseTags, "", agentIp, agentCode, "")
