@@ -23,12 +23,11 @@ print(platform.python_version())
 class PortHandler(xml.sax.handler.ContentHandler):
     count_context = 0
 
-    route_list =[]
+    route_list = []
     route = {}
 
     def __init__(self):
         self.mapping = {}
-
 
     def startElement(self, name, attrs):
         # 获取Connector
@@ -40,23 +39,26 @@ class PortHandler(xml.sax.handler.ContentHandler):
         if name == "Context":
             self.buffer = ""
             self.path = attrs["path"]
+            self.docBase = attrs["docBase"]
             route = {"path": attrs["path"]}
             route["docBase"] = attrs["docBase"]
             self.route_list.append(route)
+
     def endElement(self, name):
         if name == "Connector":
             self.inTitle = False
             self.mapping[self.protocol] = self.port
             # 对于org.apache.coyote.http11.Http11NioProtocol协议特殊化处理
-            if self.protocol == 'org.apache.coyote.http11.Http11NioProtocol':
+            if self.protocol == 'org.apache.coyote.http11.Http11NioProtocol' or self.protocol == 'org.apache.coyote.http11.Http11Protocol':
                 self.mapping['HTTP/1.1'] = self.port
                 self.mapping[self.protocol] = self.port
             else:
                 self.mapping[self.protocol] = self.port
         if name == "Context":
-            self.count_context =self.count_context+1
+            self.count_context = self.count_context + 1
             self.inTitle = False
             self.mapping['path'] = self.path
+            self.mapping['docBase'] = self.docBase
             return handler.mapping["path"]
 
 
@@ -81,13 +83,15 @@ class ConsulCenter(object):
              'graphite_exporter', 'consul_exporter', 'blackbox_exporter', 'jmx_exporter', 'oracledb_exporter', 'java']
 
     global category_list
-    category_list = {'blackbox_exporter':'PROBE/HTTP','jmx_exporter':'WEB/TOMCAT','oracledb_exporter':'RDBMS/ORACLE','mysqld_exporter':'RDBMS/MYSQL' ,'node_exporter':'OS/LINUX'}
+    category_list = {'blackbox_exporter': 'PROBE/HTTP', 'jmx_exporter': 'WEB/TOMCAT',
+                     'oracledb_exporter': 'RDBMS/ORACLE', 'mysqld_exporter': 'RDBMS/MYSQL', 'node_exporter': 'OS/LINUX'}
 
     global search_tomcat_command
     search_tomcat_command = "ps -ef | grep tomcat | grep Dcatalina | grep -v grep | awk -F '-Dcatalina.base=' '{print $2}' | awk -F ' ' '{print $1}'"
 
     global host_name
     host_name = socket.gethostname()
+
     def __init__(this, host, port):
         this._consul = consul.Consul(host, port)
 
@@ -137,7 +141,6 @@ class ConsulCenter(object):
                 port = str(consul_addr['port'])
                 addr = host + ':' + str(port)
                 res = requests.put("http://" + addr + "/v1/agent/service/register", data=put_string, timeout=(5, 5))
-                logging.info(host + ':' + str(port) + '请求成功')
                 return
             except:
                 logging.error('网络异常：' + host + ':' + str(port))
@@ -156,15 +159,15 @@ class ConsulCenter(object):
             Meta["instance"] = instance1
         if len(agentCode) > 0:
             Meta["agentCode"] = agentCode
-            Meta["categoryCode"]=category_list[str(agentCode)]
+            Meta["categoryCode"] = category_list[str(agentCode)]
         if len(sourceIp) > 0:
             Meta["sourceIp"] = sourceIp
         if len(env) > 0:
             Meta["envCode"] = env
-        if "blackbox_exporter" in  name:
-            if len(job_code)>0:
+        if "blackbox_exporter" in name:
+            if len(job_code) > 0:
                 Meta["jobCode"] = job_code
-        if len(host_name)>0:
+        if len(host_name) > 0:
             Meta["hostName"] = host_name
 
         Meta["tenantId"] = "0"
@@ -203,8 +206,8 @@ class ConsulCenter(object):
             port = str(consul_addr['port'])
             addr = host + ':' + str(port)
             payload = {'dc': 'dc1'}
-            name ='blackbox_exporter'+ "_" + env
-            res = requests.get("http://" + addr + "/v1/health/service/"+name, params=payload)
+            name = 'blackbox_exporter' + "_" + env
+            res = requests.get("http://" + addr + "/v1/health/service/" + name, params=payload)
 
         except Exception as err:
             logging.error('普通类型exporter注册异常', err);
@@ -217,31 +220,17 @@ class ConsulCenter(object):
             return state[0]["Service"]["Tags"]
 
     def GetInstance(this, tomcatPath):
-        # 将路径按照/分组
-        pathList = tomcatPath.split("/")
-        # 避免非甄云环境情况下，报错此处进行容错处理
-        if len(pathList) >= 3:
-            firstPath = str(pathList[-1])
-            secoundPath = pathList[-2]
-            thirdPath = pathList[-3]
-            if firstPath.find('#') == -1:
-                instance = thirdPath + '-' + secoundPath + '-' + firstPath
-            else:
-                instance = thirdPath + '-' + secoundPath + '-' + firstPath[0:firstPath.index('#')]
-        elif len(pathList) == 2:
-            firstPath = str(pathList[-1])
-            secoundPath = pathList[-2]
-            if firstPath.find('#') == -1:
-                instance = secoundPath + '-' + firstPath
-            else:
-                instance = secoundPath + '-' + firstPath[0:firstPath.index('#')]
-        else:
-            firstPath = str(pathList[-1])
-            if firstPath.find('#') == -1:
-                instance = firstPath
-            else:
-                instance = firstPath[0:firstPath.index('#')]
-        return instance
+        try:
+            cat_yaml_commond = "cat " + tomcatPath + "/info.yaml | grep 'NAME' | awk '{print $2}'"
+            cmd = os.popen(cat_yaml_commond)
+            # 用readlines方法读取后才是文本对象
+            info = cmd.readlines()
+            # 将读取的信息中的多个空格替换成一个空格，然后分组
+            list1 = str(info).replace('\\n', '').replace("['", '').replace("']", '')
+            return list1
+        except BaseException as err:
+            logging.error(tomcatPath + "下不存在info.yaml文件或tomcat已被禁用，请联系管理员处理")
+            return None
 
 
 if __name__ == '__main__':
@@ -297,7 +286,12 @@ if __name__ == '__main__':
                                         for tomcat in tomcats:
                                             # 获取配置文件的真实路径
                                             tomcatPath = tomcat.replace('\n', '')
+                                            # 读取yaml文件
                                             instance = consul_client.GetInstance(tomcatPath)
+
+                                            logging.info('tomcat:'+str(tomcat) + '对应的instance-->' + str(instance))
+                                            if instance is None or len(str(instance)) == 0:
+                                                continue
                                             realConfPath = tomcatPath + '/conf/server.xml'
                                             if os.path.isfile(realConfPath):
                                                 parser.parse(realConfPath)
@@ -337,7 +331,7 @@ if __name__ == '__main__':
                                                                            json.dumps(dic))
                                         res = ConsulCenter.GetService()
                                         agentCode = "blackbox_exporter"
-                                        if res != None and len(res)>0:
+                                        if res != None and len(res) > 0:
                                             inuseTags = res
                                             # 遍历当前的tags，如果当前tags的元素未出现在已经使用的tags中，则进行拼接
                                             for tag in tags:
@@ -347,14 +341,18 @@ if __name__ == '__main__':
                                                     inuseTags.append(tag)
                                             agentIp = service_host
 
-                                            consul_client.RegisterService(name+ "_" + service_host.replace('.', '_') + "_" + str(service_port), service_host, service_port, inuseTags,
-                                                                          "", agentIp, agentCode, "")
+                                            consul_client.RegisterService(
+                                                name + "_" + service_host.replace('.', '_') + "_" + str(service_port),
+                                                service_host, service_port, inuseTags,
+                                                "", agentIp, agentCode, "")
                                             logging.info('blockboxexporter注册成功');
                                         else:
                                             agentIp = service_host
 
-                                            consul_client.RegisterService(name+ "_" + service_host.replace('.', '_') + "_" + str(service_port), service_host, service_port, tags, "",
-                                                                          agentIp, agentCode, "")
+                                            consul_client.RegisterService(
+                                                name + "_" + service_host.replace('.', '_') + "_" + str(service_port),
+                                                service_host, service_port, tags, "",
+                                                agentIp, agentCode, "")
                                             logging.info('blockboxexporter注册成功');
 
                                 elif p.name() == "node_exporter":
@@ -369,7 +367,7 @@ if __name__ == '__main__':
                                     consul_client.RegisterService(
                                         name + "_" + service_host.replace('.', '_') + "_" + str(service_port),
                                         service_host, service_port, tags, instance1, agentIp, agentCode, sourceIp)
-                                    logging.info('node_exporter注册成功');
+                                    logging.info(name + '注册成功');
                                 else:
                                     # 非blackbox类型的tag还是返回agentCode
                                     dic = {"agentCode": name}
@@ -382,11 +380,11 @@ if __name__ == '__main__':
                                     consul_client.RegisterService(
                                         name + "_" + service_host.replace('.', '_') + "_" + str(service_port),
                                         service_host, service_port, tags, instance1, agentIp, agentCode, sourceIp)
-                                    logging.info('普通类型exporter注册成功');
+                                    logging.info(name + '注册成功');
                                 # res = consul_client.GetService(name)
                                 break
                         except BaseException as err:
-                            logging.error('普通类型exporter注册异常', err);
+                            logging.error(name + '注册异常');
                         else:
                             continue
                     a.close()
@@ -394,7 +392,7 @@ if __name__ == '__main__':
                 continue
 
     # 针对jmx_exporter
-    #cmd = "ps -ef | grep jmx_exporter | awk '{print $1}'"
+    # cmd = "ps -ef | grep jmx_exporter | awk '{print $1}'"
     cmd = "ps -ef | grep jmx_exporter"
     jmx = os.popen(cmd)
     jmx_exporters = jmx.readlines()
@@ -402,10 +400,11 @@ if __name__ == '__main__':
         try:
             result = re.findall("jmx_.+?\.jar=\d+?:", jmx_exporter, flags=0)
             if len(result) > 0:
-                #将ps -ef | grep命令的返回值进行正则处理，将多个空格替换为一个空格，方便后续获取PID
+                # 将ps -ef | grep命令的返回值进行正则处理，将多个空格替换为一个空格，方便后续获取PID
                 result2 = re.sub(' +', ' ', jmx_exporter).split(' ')
-                #result1 = re.findall(r"\d+\.?\d*", jmx_exporter, flags=0)
-                cmd1 = "ps -ef | grep tomcat | grep " + result2[1] + " | grep -v grep | awk -F '-Dcatalina.base=' '{print $2}' | awk -F ' ' '{print $1}'"
+                # result1 = re.findall(r"\d+\.?\d*", jmx_exporter, flags=0)
+                cmd1 = "ps -ef | grep tomcat | grep " + result2[
+                    1] + " | grep -v grep | awk -F '-Dcatalina.base=' '{print $2}' | awk -F ' ' '{print $1}'"
                 # 获取tomcat
                 tomcats = os.popen(cmd1)
                 # 按行读取
@@ -416,10 +415,17 @@ if __name__ == '__main__':
                 handler = PortHandler()
                 parser.setContentHandler(handler)
                 instance = None
+                flag = False
                 for tomcat in tomcats:
                     # 获取配置文件的真实路径
                     tomcatPath = tomcat.replace('\n', '')
+                    # 读取yaml文件
                     instance = consul_client.GetInstance(tomcatPath)
+                    logging.info('tomcat'+str(tomcat) + '对应的instance:' + str(instance))
+                    if instance is None or len(str(instance)) == 0:
+                        flag = True
+                if flag:
+                    continue
                 exporter_str_list = result[0].split('=')
                 str_port = exporter_str_list[1]
                 pos = str_port.rfind(':')
@@ -448,7 +454,8 @@ if __name__ == '__main__':
             result = re.findall("jmx_.+?\.jar=\d+?:", jmx_exporter, flags=0)
             if len(result) > 0:
                 result2 = re.sub(' +', ' ', jmx_exporter).split(' ')
-                cmd1 = "ps -ef | grep tomcat | grep " + result2[0] + " | grep -v grep | awk -F '-Dcatalina.base=' '{print $2}' | awk -F ' ' '{print $1}'"
+                cmd1 = "ps -ef | grep tomcat | grep " + result2[
+                    0] + " | grep -v grep | awk -F '-Dcatalina.base=' '{print $2}' | awk -F ' ' '{print $1}'"
                 # 获取tomcat
                 tomcats = os.popen(cmd1)
                 # 按行读取
@@ -459,10 +466,17 @@ if __name__ == '__main__':
                 handler = PortHandler()
                 parser.setContentHandler(handler)
                 instance = None
+                flag = False
                 for tomcat in tomcats:
                     # 获取配置文件的真实路径
                     tomcatPath = tomcat.replace('\n', '')
+                    # 读取yaml文件
                     instance = consul_client.GetInstance(tomcatPath)
+                    logging.info('tomcat:'+str(tomcat) + '对应的instance-->' + str(instance))
+                    if instance is None or len(str(instance)) == 0:
+                        flag = True
+                if flag:
+                    continue
                 exporter_str_list = result[0].split('=')
                 str_port = exporter_str_list[1]
                 pos = str_port.rfind(':')
@@ -494,22 +508,38 @@ if __name__ == '__main__':
         # 构造xml解析器
         parser = xml.sax.make_parser()
         handler = PortHandler()
-
         parser.setContentHandler(handler)
         for tomcat in tomcats:
             # 获取配置文件的真实路径
             tomcatPath = tomcat.replace('\n', '')
+            # 读取yaml文件
             instance = consul_client.GetInstance(tomcatPath)
+            if instance is None or len(str(instance)) == 0:
+                continue
+            logging.info('tomcat:'+str(tomcat) + '对应的instance-->' + str(instance))
             realConfPath = tomcatPath + '/conf/server.xml'
             if os.path.isfile(realConfPath):
                 parser.parse(realConfPath)
-                #如果配置了两个路径，则去匹配docBase包含/u01/xxx/webapp/webRoot，否则就取本身的
-                if len(handler.route_list)>1:
+                # 如果配置了两个路径，则去匹配docBase包含/u01/xxx/webapp/webRoot，否则就取本身的
+                if len(handler.route_list) > 1:
                     for route in handler.route_list:
-                        if len(re.findall(".*u01.*?/webapp.*", route["docBase"], flags=0))>0:
-                            handler.mapping['path']=route["path"]
-                            url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1'] + \
-                                  handler.mapping['path']
+                        if len(re.findall(".*u01.*?/webapp.*", route["docBase"], flags=0)) > 0 or len(
+                                re.findall(".*u01.*?/itfapp.*", route["docBase"], flags=0)) > 0 or len(
+                                re.findall(".*u01.*?/itfweb.*", route["docBase"], flags=0)) > 0:
+                            handler.mapping['path'] = route["path"]
+                            handler.mapping['docBase'] = route["docBase"]
+                            if handler.mapping.__contains__("docBase"):
+                                health_check_addr = handler.mapping['docBase'] + '/modules/public/health_check.screen'
+                                if os.path.exists(health_check_addr):
+                                    url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1'] + \
+                                          handler.mapping['path'] + '/modules/public/health_check.screen'
+                                else:
+                                    url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1'] + \
+                                          handler.mapping['path']
+                            else:
+                                url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1'] + \
+                                      handler.mapping['path']
+                            logging.info("tomcat实例：" + instance + "健康检查地址为->" + url)
                             sourceIp = service_host
                             dic = {"endpoint": url}
                             dic["envCode"] = env
@@ -531,10 +561,26 @@ if __name__ == '__main__':
                                     handler.mapping[
                                         'path'],
                                     json.dumps(dic))
+
                 else:
                     if handler.mapping.__contains__("path"):
-                        url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1'] + \
-                              handler.mapping['path']
+                        # 如果有docbase，则去判断是否存在指定的healthScreen，存在的话需要在健康检查地址后边拼healthScreen
+                        # 通过docBasre判断是否存在/modules/public/
+                        if handler.mapping.__contains__("docBase") and (
+                                len(re.findall(".*u01.*?/webapp.*", handler.mapping['docBase'], flags=0)) > 0 or len(
+                            re.findall(".*u01.*?/itfapp.*", handler.mapping['docBase'], flags=0)) > 0 or len(
+                            re.findall(".*u01.*?/itfweb.*", handler.mapping['docBase'], flags=0)) > 0):
+                            health_check_addr = handler.mapping['docBase'] + '/modules/public/health_check.screen'
+                            if os.path.exists(str(health_check_addr)):
+                                url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1'] + \
+                                      handler.mapping['path'] + '/modules/public/health_check.screen'
+                            else:
+                                url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1'] + \
+                                      handler.mapping['path']
+                        else:
+                            url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1'] + \
+                                  handler.mapping['path']
+                        logging.info("tomcat实例：" + instance + "健康检查地址为 -->" + url)
                         sourceIp = service_host
                         dic = {"endpoint": url}
                         dic["envCode"] = env
@@ -555,7 +601,19 @@ if __name__ == '__main__':
                                     'path'],
                                 json.dumps(dic))
                     else:
-                        url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1']
+                        if handler.mapping.__contains__("docBase") and (
+                                len(re.findall(".*u01.*?/webapp.*", handler.mapping['docBase'], flags=0)) > 0 or len(
+                            re.findall(".*u01.*?/itfapp.*", handler.mapping['docBase'], flags=0)) > 0 or len(
+                            re.findall(".*u01.*?/itfweb.*", handler.mapping['docBase'], flags=0)) > 0):
+                            health_check_addr = handler.mapping['docBase'] + '/modules/public/health_check.screen'
+                            if os.path.exists(str(health_check_addr)):
+                                url = "http://" + service_host + ":" + handler.mapping[
+                                    'HTTP/1.1'] + '/modules/public/health_check.screen'
+                            else:
+                                url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1']
+                        else:
+                            url = "http://" + service_host + ":" + handler.mapping['HTTP/1.1']
+                        logging.info("tomcat实例：" + instance + "健康检查地址为->" + url)
                         sourceIp = service_host
                         dic = {"endpoint": url}
                         dic["envCode"] = env
@@ -565,7 +623,8 @@ if __name__ == '__main__':
                         tags.append(service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'])
                         consul_client.PutValue(service_host.replace('.', '_') + '/' + handler.mapping['HTTP/1.1'],
                                                json.dumps(dic))
-                handler.route_list=[]
+                handler.route_list = []
+                logging.info('*************************************************************************************')
         res = ConsulCenter.GetService()
         box_host = balck_box_addr['host']
         box_host = box_host.encode("utf-8")
@@ -575,13 +634,9 @@ if __name__ == '__main__':
             inuseTags = res
             # 遍历当前的tags，如果当前tags的元素未出现在已经使用的tags中，则进行拼接
             for tag in tags:
-                if tag in inuseTags:
-                    logging.info(tag)
-                else:
+                if tag not in inuseTags:
                     inuseTags.append(tag)
-                    logging.info(tag)
             agentIp = service_host
-
             consul_client.RegisterService(name + "_" + env, box_host, box_port, inuseTags, "", agentIp, agentCode, "")
             logging.info('tomcat健康检查注册成功');
 
